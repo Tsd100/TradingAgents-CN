@@ -877,8 +877,8 @@ class SimpleAnalysisService:
                 logger.info(f"📊 [线程] 创建进度跟踪器: {task_id}")
                 tracker = RedisProgressTracker(
                     task_id=task_id,
-                    analysts=request.parameters.selected_analysts or ["market", "fundamentals"],
-                    research_depth=request.parameters.research_depth or "标准",
+                    analysts=request.parameters.selected_analysts if request.parameters else ["market", "fundamentals"],
+                    research_depth=request.parameters.research_depth if request.parameters else "标准",
                     llm_provider="dashscope"
                 )
                 logger.info(f"✅ [线程] 进度跟踪器创建完成: {task_id}")

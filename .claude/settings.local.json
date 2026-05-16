@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(docker exec tradingagents-mongodb mongo -u admin -p tradingagents123 --authenticationDatabase admin tradingagentscn --eval \"printjson\\(db.stock_basic_info.findOne\\({}, {code: 1, name: 1, pe: 1, source: 1, _id: 0}\\)\\)\" 2>&1)",
+      "PowerShell(docker exec -d tradingagents-backend python /app/scripts/sync_daily_quotes_baostock.py --mongo-uri \"mongodb://admin:tradingagents123@mongodb:27017/tradingagentscn?authSource=admin\" 2>&1)"
+    ]
+  }
+}

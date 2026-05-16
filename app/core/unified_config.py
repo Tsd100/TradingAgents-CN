@@ -113,6 +113,11 @@ class UnifiedConfigManager:
                     max_tokens=model.get("max_tokens", 4000),
                     temperature=model.get("temperature", 0.7),
                     enabled=model.get("enabled", True),
+                    capability_level=model.get("capability_level", 2),
+                    suitable_roles=model.get("suitable_roles", ["both"]),
+                    features=model.get("features", []),
+                    recommended_depths=model.get("recommended_depths", ["快速", "基础", "标准"]),
+                    performance_metrics=model.get("performance_metrics"),
                     description=f"{model.get('provider', '')} {model.get('model_name', '')}"
                 )
                 llm_configs.append(llm_config)
@@ -136,7 +141,12 @@ class UnifiedConfigManager:
                 "base_url": llm_config.api_base,
                 "max_tokens": llm_config.max_tokens,
                 "temperature": llm_config.temperature,
-                "enabled": llm_config.enabled
+                "enabled": llm_config.enabled,
+                "capability_level": llm_config.capability_level,
+                "suitable_roles": llm_config.suitable_roles,
+                "features": llm_config.features,
+                "recommended_depths": llm_config.recommended_depths,
+                "performance_metrics": llm_config.performance_metrics
             }
             
             # 查找并更新现有配置，或添加新配置

@@ -32,11 +32,12 @@ class MongoDBCacheAdapter:
     def _init_mongodb_connection(self):
         """初始化MongoDB连接"""
         try:
-            from tradingagents.config.database_manager import get_mongodb_client
+            from tradingagents.config.database_manager import get_mongodb_client, get_database_manager
             self.mongodb_client = get_mongodb_client()
             if self.mongodb_client:
-                self.db = self.mongodb_client.get_database('tradingagents')
-                logger.debug("✅ MongoDB连接初始化成功")
+                db_name = get_database_manager().mongodb_config.get("database", "tradingagents")
+                self.db = self.mongodb_client.get_database(db_name)
+                logger.debug(f"✅ MongoDB连接初始化成功 (数据库: {db_name})")
             else:
                 logger.warning("⚠️ MongoDB客户端不可用，回退到传统模式")
                 self.use_app_cache = False

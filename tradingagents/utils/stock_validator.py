@@ -779,10 +779,50 @@ class StockDataPreparer:
                 try:
                     logger.info(f"🔄 [数据同步] 尝试使用数据源: {data_source}")
 
-                    # BaoStock 不支持单个股票同步，跳过
+                    # 初始化结果统计
+                    historical_records = 0
+                    financial_synced = False
+                    realtime_synced = False
+
                     if data_source == "baostock":
-                        logger.warning(f"⚠️ [数据同步] BaoStock不支持单个股票同步，跳过")
-                        last_error = f"{data_source}: 不支持单个股票同步"
+                        # BaoStock 单股票同步：直接使用 provider 获取数据然后保存
+                        logger.info(f"📊 [数据同步] 使用BaoStock同步历史数据...")
+                        try:
+                            from tradingagents.dataflows.providers.china.baostock import BaoStockProvider
+                            provider = BaoStockProvider()
+                            import pandas as pd
+                            hist_df = await provider.get_historical_data(
+                                stock_code, start_date, end_date, period="daily"
+                            )
+                            if hist_df is not None and not hist_df.empty:
+                                from app.services.historical_data_service import get_historical_data_service
+                                hds = await get_historical_data_service()
+                                saved_count = await hds.save_historical_data(
+                                    symbol=stock_code,
+                                    data=hist_df,
+                                    data_source="baostock",
+                                    market="CN",
+                                    period="daily"
+                                )
+                                historical_records = saved_count
+                                logger.info(f"✅ [数据同步] BaoStock历史数据同步成功: {saved_count}条")
+                            else:
+                                last_error = f"baostock: 历史数据为空"
+                                logger.warning(f"⚠️ [数据同步] BaoStock历史数据为空")
+                        except Exception as e:
+                            last_error = f"baostock: {str(e)}"
+                            logger.warning(f"⚠️ [数据同步] BaoStock同步异常: {e}")
+
+                        if historical_records > 0:
+                            return {
+                                "success": True,
+                                "message": f"使用baostock同步成功: 历史{historical_records}条",
+                                "synced_records": historical_records,
+                                "data_source": "baostock",
+                                "historical_records": historical_records,
+                                "financial_synced": False,
+                                "realtime_synced": False
+                            }
                         continue
 
                     # 根据数据源获取对应的同步服务
@@ -795,11 +835,6 @@ class StockDataPreparer:
                     else:
                         logger.warning(f"⚠️ [数据同步] 不支持的数据源: {data_source}")
                         continue
-
-                    # 初始化结果统计
-                    historical_records = 0
-                    financial_synced = False
-                    realtime_synced = False
 
                     # 2.1 同步历史数据
                     logger.info(f"📊 [数据同步] 同步历史数据...")

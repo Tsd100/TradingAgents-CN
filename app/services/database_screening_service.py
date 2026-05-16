@@ -118,36 +118,8 @@ class DatabaseScreeningService:
             db = get_mongo_db()
             collection = db[self.collection_name]
 
-            # 🔥 获取数据源优先级配置
-            if not source:
-                from app.core.unified_config import UnifiedConfigManager
-                config = UnifiedConfigManager()
-                data_source_configs = await config.get_data_source_configs_async()
-
-                logger.info(f"🔍 [database_screening] 获取到 {len(data_source_configs)} 个数据源配置")
-                for ds in data_source_configs:
-                    logger.info(f"   - {ds.name}: type={ds.type}, priority={ds.priority}, enabled={ds.enabled}")
-
-                # 提取启用的数据源，按优先级排序
-                enabled_sources = [
-                    ds.type.lower() for ds in data_source_configs
-                    if ds.enabled and ds.type.lower() in ['tushare', 'akshare', 'baostock']
-                ]
-
-                logger.info(f"🔍 [database_screening] 启用的数据源（按优先级）: {enabled_sources}")
-
-                if not enabled_sources:
-                    enabled_sources = ['tushare', 'akshare', 'baostock']
-                    logger.warning(f"⚠️ [database_screening] 没有启用的数据源，使用默认: {enabled_sources}")
-
-                source = enabled_sources[0] if enabled_sources else 'tushare'
-                logger.info(f"✅ [database_screening] 最终使用的数据源: {source}")
-
             # 构建查询条件（现在视图已包含实时行情数据，可以直接查询所有字段）
             query = await self._build_query(conditions)
-
-            # 🔥 添加数据源筛选
-            query["source"] = source
 
             logger.info(f"📋 数据库查询条件: {query}")
 
@@ -180,7 +152,7 @@ class DatabaseScreeningService:
             if codes:
                 await self._enrich_with_financial_data(results, codes)
 
-            logger.info(f"✅ 数据库筛选完成: 总数={total_count}, 返回={len(results)}, 数据源={source}")
+            logger.info(f"✅ 数据库筛选完成: 总数={total_count}, 返回={len(results)}")
 
             return results, total_count
             
@@ -262,27 +234,9 @@ class DatabaseScreeningService:
             db = get_mongo_db()
             financial_collection = db['stock_financial_data']
 
-            # 🔥 获取数据源优先级配置
-            from app.core.unified_config import UnifiedConfigManager
-            config = UnifiedConfigManager()
-            data_source_configs = await config.get_data_source_configs_async()
-
-            # 提取启用的数据源，按优先级排序
-            enabled_sources = [
-                ds.type.lower() for ds in data_source_configs
-                if ds.enabled and ds.type.lower() in ['tushare', 'akshare', 'baostock']
-            ]
-
-            if not enabled_sources:
-                enabled_sources = ['tushare', 'akshare', 'baostock']
-
-            # 优先使用优先级最高的数据源
-            preferred_source = enabled_sources[0] if enabled_sources else 'tushare'
-
-            # 批量查询最新的财务数据
-            # 按 code 分组，取每个 code 的最新一期数据（只查询优先级最高的数据源）
+            # 批量查询最新的财务数据（不限制数据源）
             pipeline = [
-                {"$match": {"code": {"$in": codes}, "data_source": preferred_source}},
+                {"$match": {"code": {"$in": codes}}},
                 {"$sort": {"code": 1, "report_period": -1}},
                 {"$group": {
                     "_id": "$code",

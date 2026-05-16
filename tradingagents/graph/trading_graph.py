@@ -71,6 +71,9 @@ def create_llm_by_provider(provider: str, model: str, backend_url: str, temperat
                     api_key = os.getenv(env_key)
 
         factory_provider = "openai" if normalized_provider == "siliconflow" else normalized_provider
+        # 对 DeepSeek 模型禁用 thinking 模式，避免 V4 模型的 reasoning_content 回传问题
+        if normalized_provider == "deepseek" and "extra_body" not in extra_kwargs:
+            extra_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         client = create_llm_client(
             provider=factory_provider,
             model=model,

@@ -3617,7 +3617,7 @@ class ConfigService:
 
             logger.info(f"🔍 [DeepSeek 测试] 使用模型: {model_name}")
 
-            url = "https://api.deepseek.com/chat/completions"
+            url = "https://api.deepseek.com/v1/chat/completions"
 
             headers = {
                 "Content-Type": "application/json",
@@ -3629,8 +3629,9 @@ class ConfigService:
                 "messages": [
                     {"role": "user", "content": "你好，请简单介绍一下你自己。"}
                 ],
-                "max_tokens": 50,
-                "temperature": 0.1
+                "max_tokens": 100,
+                "temperature": 0.1,
+                "thinking": {"type": "disabled"}
             }
 
             response = requests.post(url, json=data, headers=headers, timeout=10)
@@ -3639,6 +3640,9 @@ class ConfigService:
                 result = response.json()
                 if "choices" in result and len(result["choices"]) > 0:
                     content = result["choices"][0]["message"]["content"]
+                    # V4 models may return reasoning_content instead of content
+                    if not content or len(content.strip()) == 0:
+                        content = result["choices"][0]["message"].get("reasoning_content", "")
                     if content and len(content.strip()) > 0:
                         return {
                             "success": True,

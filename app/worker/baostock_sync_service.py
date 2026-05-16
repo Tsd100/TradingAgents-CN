@@ -271,7 +271,7 @@ class BaoStockSyncService:
 
             # 从数据库获取股票列表
             collection = self.db.stock_basic_info
-            cursor = collection.find({"data_source": "baostock"}, {"code": 1})
+            cursor = collection.find({"source": "baostock"}, {"code": 1})
             stock_codes = [doc["code"] async for doc in cursor]
 
             if not stock_codes:
@@ -371,7 +371,7 @@ class BaoStockSyncService:
 
             # 从数据库获取股票列表
             collection = self.db.stock_basic_info
-            cursor = collection.find({"data_source": "baostock"}, {"code": 1})
+            cursor = collection.find({"source": "baostock"}, {"code": 1})
             stock_codes = [doc["code"] async for doc in cursor]
 
             if not stock_codes:
@@ -539,8 +539,8 @@ class BaoStockSyncService:
                 db_ok = False
             
             # 统计数据
-            basic_info_count = await self.db.stock_basic_info.count_documents({"data_source": "baostock"})
-            quotes_count = await self.db.market_quotes.count_documents({"data_source": "baostock"})
+            basic_info_count = await self.db.stock_basic_info.count_documents({"source": "baostock"})
+            quotes_count = await self.db.market_quotes.count_documents({"source": "baostock"})
             
             return {
                 "service": "BaoStock同步服务",

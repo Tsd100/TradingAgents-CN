@@ -13,6 +13,22 @@ class NormalizedChatOpenAI(ChatOpenAI):
     def invoke(self, input, config=None, **kwargs):
         return normalize_content(super().invoke(input, config, **kwargs))
 
+    async def ainvoke(self, input, config=None, **kwargs):
+        result = await super().ainvoke(input, config, **kwargs)
+        return normalize_content(result)
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        result = super()._generate(messages, stop, run_manager, **kwargs)
+        for generation in result.generations:
+            normalize_content(generation.message)
+        return result
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        result = await super()._agenerate(messages, stop, run_manager, **kwargs)
+        for generation in result.generations:
+            normalize_content(generation.message)
+        return result
+
 
 _PASSTHROUGH_KWARGS = (
     "temperature",
@@ -22,6 +38,8 @@ _PASSTHROUGH_KWARGS = (
     "callbacks",
     "http_client",
     "http_async_client",
+    "model_kwargs",
+    "extra_body",
 )
 
 _PROVIDER_CONFIG = {

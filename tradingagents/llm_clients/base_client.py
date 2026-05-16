@@ -4,7 +4,9 @@ import warnings
 
 
 def normalize_content(response):
-    """Normalize typed content blocks returned by some providers to plain text."""
+    """Normalize typed content blocks returned by some providers to plain text.
+    Also strips reasoning_content from DeepSeek V4 models to prevent the
+    'reasoning_content must be passed back' error in multi-turn conversations."""
     content = getattr(response, "content", None)
     if isinstance(content, list):
         texts = [
@@ -13,6 +15,15 @@ def normalize_content(response):
             for item in content
         ]
         response.content = "\n".join(text for text in texts if text)
+
+    # DeepSeek V4 的 reasoning_content 必须在多轮对话中回传，否则 API 报错。
+    # 直接清除它，这样后续请求就不需要回传。
+    for attr in ("additional_kwargs", "response_metadata"):
+        if hasattr(response, attr):
+            extra = getattr(response, attr)
+            if isinstance(extra, dict) and "reasoning_content" in extra:
+                del extra["reasoning_content"]
+
     return response
 
 
