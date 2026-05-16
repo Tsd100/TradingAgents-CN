@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="single-analysis">
     <!-- 页面头部 -->
     <div class="page-header">
@@ -34,14 +34,15 @@
                 <h4 class="section-title">📊 股票信息</h4>
                 <el-row :gutter="16">
                   <el-col :span="12">
-                    <el-form-item label="股票代码" required>
+                    <el-form-item label="股票代码">
                       <el-input
                         v-model="analysisForm.stockCode"
-                        placeholder="如：000001、AAPL、700、1810"
+                        placeholder="如：000001、AAPL、700"
                         clearable
                         size="large"
                         class="stock-input"
                         :class="{ 'is-error': stockCodeError }"
+                        :disabled="!!analysisForm.stockName"
                         @blur="validateStockCodeInput"
                         @input="onStockCodeInput"
                       >
@@ -59,6 +60,40 @@
                       </div>
                     </el-form-item>
                   </el-col>
+                  <el-col :span="12">
+                    <el-form-item label="股票名称">
+                      <el-autocomplete
+                        v-model="analysisForm.stockName"
+                        :fetch-suggestions="searchStockName"
+                        :trigger-on-focus="false"
+                        placeholder="输入股票名称搜索，如：烽火通信"
+                        clearable
+                        size="large"
+                        style="width: 100%"
+                        :disabled="!!analysisForm.stockCode"
+                        :highlight-first-item="true"
+                        @select="onStockNameSelect"
+                        @input="onStockNameInput"
+                      >
+                        <template #prefix>
+                          <el-icon><Search /></el-icon>
+                        </template>
+                        <template #default="{ item }">
+                          <div class="stock-search-item">
+                            <span class="stock-code">{{ item.value }}</span>
+                            <span class="stock-name">{{ item.name }}</span>
+                            <el-tag size="small" type="info">{{ item.market }}</el-tag>
+                          </div>
+                        </template>
+                      </el-autocomplete>
+                      <div v-if="stockNameHelp" class="help-message">
+                        <el-icon><InfoFilled /></el-icon>
+                        {{ stockNameHelp }}
+                      </div>
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+                <el-row :gutter="16">
                   <el-col :span="12">
                     <el-form-item label="市场类型">
                       <el-select
@@ -83,18 +118,19 @@
                       </el-select>
                     </el-form-item>
                   </el-col>
+                  <el-col :span="12">
+                    <el-form-item label="分析日期">
+                      <el-date-picker
+                        v-model="analysisForm.analysisDate"
+                        type="date"
+                        placeholder="选择分析基准日期"
+                        size="large"
+                        style="width: 100%"
+                        :disabled-date="disabledDate"
+                      />
+                    </el-form-item>
+                  </el-col>
                 </el-row>
-
-                <el-form-item label="分析日期">
-                  <el-date-picker
-                    v-model="analysisForm.analysisDate"
-                    type="date"
-                    placeholder="选择分析基准日期"
-                    size="large"
-                    style="width: 100%"
-                    :disabled-date="disabledDate"
-                  />
-                </el-form-item>
               </div>
 
               <!-- 分析深度 -->
@@ -695,6 +731,7 @@ import {
   Document,
   TrendCharts,
   InfoFilled,
+  Search,
   Check,
   Loading,
   Refresh,
@@ -730,6 +767,7 @@ type MarketType = 'A股' | '美股' | '港股'
 // 表单类型定义
 interface AnalysisForm {
   stockCode: string
+  stockName: string
   symbol: string
   market: MarketType
   analysisDate: Date
@@ -802,6 +840,7 @@ const modelRecommendation = ref<{
 // 分析表单
 const analysisForm = reactive<AnalysisForm>({
   stockCode: '',  // 保留用于表单绑定
+  stockName: '',  // 股票名称（与代码二选一）
   symbol: '',     // 标准化后的代码
   market: 'A股',
   analysisDate: new Date(),
@@ -815,6 +854,8 @@ const analysisForm = reactive<AnalysisForm>({
 // 股票代码验证相关
 const stockCodeError = ref<string>('')
 const stockCodeHelp = ref<string>('')
+const stockNameHelp = ref<string>('')
+let stockNameDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 // 深度选项（5个级别，基于实际测试数据更新）
 const depthOptions = [
@@ -836,6 +877,11 @@ const onStockCodeInput = () => {
   stockCodeError.value = ''
   // 显示格式提示
   stockCodeHelp.value = getStockCodeFormatHelp(analysisForm.market)
+  // 清空代码时也清空名称
+  if (!analysisForm.stockCode.trim()) {
+    analysisForm.stockName = ''
+    stockNameHelp.value = ''
+  }
 }
 
 // 市场类型变更时的处理
@@ -879,10 +925,84 @@ const validateStockCodeInput = () => {
     if (validation.normalizedCode) {
       analysisForm.stockCode = validation.normalizedCode
     }
+
+    // 根据代码自动补全股票名称
+    fillStockNameFromCode(analysisForm.stockCode.trim())
   }
 
   // 获取股票信息
   fetchStockInfo()
+}
+
+// 根据股票代码自动填充股票名称
+const fillStockNameFromCode = async (code: string) => {
+  if (!code) return
+  try {
+    const marketMap: Record<string, string> = { 'A股': 'CN', '美股': 'US', '港股': 'HK' }
+    const market = marketMap[analysisForm.market] || 'CN'
+    const res = await stocksApi.search(market, code, 3)
+    const data = res.data || res
+    const stocks = data.stocks || []
+    const match = stocks.find((s: any) => s.code === code || s.code === code.replace(/\D/g, ''))
+    if (match) {
+      analysisForm.stockName = match.name
+      stockNameHelp.value = `✓ 已识别：${match.name}`
+    }
+  } catch {
+    // 静默失败
+  }
+}
+
+// 股票名称搜索（el-autocomplete 的 fetch-suggestions 回调）
+const searchStockName = (queryString: string, callback: (suggestions: any[]) => void) => {
+  if (!queryString || queryString.trim().length < 1) {
+    callback([])
+    return
+  }
+  // 防抖：300ms 内不重复请求
+  if (stockNameDebounceTimer) {
+    clearTimeout(stockNameDebounceTimer)
+  }
+  stockNameDebounceTimer = setTimeout(async () => {
+    try {
+      // 根据当前市场类型映射到后端 market 参数
+      const marketMap: Record<string, string> = { 'A股': 'CN', '美股': 'US', '港股': 'HK' }
+      const market = marketMap[analysisForm.market] || 'CN'
+      const res = await stocksApi.search(market, queryString.trim(), 15)
+      const data = res.data || res
+      const stocks = data.stocks || []
+      callback(stocks.map((s: any) => ({
+        value: s.code,
+        name: s.name,
+        market: s.market || market,
+      })))
+    } catch {
+      callback([])
+    }
+  }, 300)
+}
+
+// 选中股票名称后的处理
+const onStockNameSelect = (item: any) => {
+  analysisForm.stockName = item.name
+  analysisForm.stockCode = item.value
+  // 根据返回的市场类型自动切换
+  const marketReverseMap: Record<string, MarketType> = { 'CN': 'A股', 'HK': '港股', 'US': '美股' }
+  if (item.market && marketReverseMap[item.market]) {
+    analysisForm.market = marketReverseMap[item.market]
+  }
+  stockCodeError.value = ''
+  stockCodeHelp.value = ''
+  stockNameHelp.value = `✓ 已选择：${item.name}（${item.value}）`
+}
+
+// 股票名称输入时的处理
+const onStockNameInput = () => {
+  stockNameHelp.value = ''
+  if (!analysisForm.stockName) {
+    // 清空名称时，重新启用代码输入
+    stockCodeError.value = ''
+  }
 }
 
 // 获取股票信息
@@ -906,10 +1026,40 @@ const toggleAnalyst = (analystName: string) => {
 
 // 提交分析
 const submitAnalysis = async () => {
-  const stockCode = analysisForm.stockCode.trim()
-  if (!stockCode) {
-    ElMessage.warning('请输入股票代码')
+  let stockCode = analysisForm.stockCode.trim()
+  const stockName = analysisForm.stockName.trim()
+
+  // 必须提供股票代码或股票名称之一
+  if (!stockCode && !stockName) {
+    ElMessage.warning('请输入股票代码或股票名称')
     return
+  }
+
+  // 如果只有名称没有代码，尝试搜索解析
+  if (!stockCode && stockName) {
+    try {
+      const marketMap: Record<string, string> = { 'A股': 'CN', '美股': 'US', '港股': 'HK' }
+      const market = marketMap[analysisForm.market] || 'CN'
+      const res = await stocksApi.search(market, stockName, 5)
+      const data = res.data || res
+      const stocks = data.stocks || []
+      if (stocks.length === 0) {
+        ElMessage.error(`未找到与"${stockName}"匹配的股票，请检查名称或直接输入股票代码`)
+        return
+      }
+      if (stocks.length === 1) {
+        // 唯一匹配，自动使用
+        stockCode = stocks[0].code
+        analysisForm.stockCode = stockCode
+      } else {
+        // 多个匹配，提示用户选择
+        ElMessage.warning(`找到 ${stocks.length} 个匹配的股票，请从下拉列表中选择`)
+        return
+      }
+    } catch {
+      ElMessage.error('股票名称搜索失败，请直接输入股票代码')
+      return
+    }
   }
 
   // 验证股票代码格式
@@ -2351,6 +2501,25 @@ onMounted(async () => {
           :deep(.el-input__inner) {
             border-color: #f56c6c;
           }
+        }
+      }
+
+      // 股票名称搜索下拉项样式
+      .stock-search-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+
+        .stock-code {
+          font-weight: 600;
+          color: #303133;
+          min-width: 70px;
+        }
+
+        .stock-name {
+          flex: 1;
+          color: #606266;
         }
       }
 

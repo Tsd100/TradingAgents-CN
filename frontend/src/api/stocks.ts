@@ -80,7 +80,27 @@ export interface NewsResponse {
   items: NewsItem[]
 }
 
+export interface StockSearchItem {
+  code: string
+  name: string
+  market: string
+  source?: string
+}
+
 export const stocksApi = {
+  /**
+   * 搜索股票（按代码或名称）
+   * @param market 市场类型: CN/HK/US
+   * @param keyword 搜索关键词
+   * @param limit 返回数量
+   */
+  async search(market: string, keyword: string, limit = 20) {
+    return ApiClient.get<{ stocks: StockSearchItem[]; total: number }>(
+      `/api/markets/${market}/stocks/search`,
+      { q: keyword, limit }
+    )
+  },
+
   /**
    * 获取股票行情
    * @param symbol 6位股票代码

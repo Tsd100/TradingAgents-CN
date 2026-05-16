@@ -185,21 +185,21 @@ class UnifiedStockService:
             ]
         }
 
-        # 查询所有匹配的记录
-        cursor = collection.find(filter_query)
+        # 查询所有匹配的记录（排除 _id 避免序列化错误）
+        cursor = collection.find(filter_query, {"_id": 0})
         all_results = await cursor.to_list(length=None)
-        
+
         if not all_results:
             return []
-        
+
         # 按 code 分组，每个 code 只保留优先级最高的数据源
         source_priority = await self._get_source_priority(market)
         unique_results = {}
-        
+
         for doc in all_results:
             code = doc.get("code")
             source = doc.get("source")
-            
+
             if code not in unique_results:
                 unique_results[code] = doc
             else:
@@ -212,9 +212,15 @@ class UnifiedStockService:
                 except ValueError:
                     # 如果source不在优先级列表中，保持当前记录
                     pass
-        
-        # 返回前 limit 条
-        result_list = list(unique_results.values())[:limit]
+
+        # 返回前 limit 条，只保留前端需要的字段
+        result_list = []
+        for doc in list(unique_results.values())[:limit]:
+            result_list.append({
+                "code": doc.get("code", ""),
+                "name": doc.get("name", ""),
+                "market": doc.get("market", market),
+            })
         logger.info(f"🔍 搜索 {market} 市场: '{query}' -> {len(result_list)} 条结果（已去重）")
         return result_list
 
