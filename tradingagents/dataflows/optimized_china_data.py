@@ -345,10 +345,18 @@ class OptimizedChinaDataProvider:
             if "股票名称:" in stock_info:
                 lines = stock_info.split('\n')
                 for line in lines:
-                    if "股票名称:" in line:
+                    if "股票名称:" in line and company_name == "未知公司":
                         company_name = line.split(':')[1].strip()
                         logger.debug(f"🔍 [股票代码追踪] 从统一接口获取到股票名称: {company_name}")
-                        break
+                    elif "当前价格:" in line and current_price == "N/A":
+                        current_price = line.split(':', 1)[1].strip()
+                        logger.debug(f"🔍 [股票代码追踪] 从统一接口获取到当前价格: {current_price}")
+                    elif "涨跌幅:" in line and change_pct == "N/A":
+                        change_pct = line.split(':', 1)[1].strip()
+                        logger.debug(f"🔍 [股票代码追踪] 从统一接口获取到涨跌幅: {change_pct}")
+                    elif "成交量:" in line and volume == "N/A":
+                        volume = line.split(':', 1)[1].strip()
+                        logger.debug(f"🔍 [股票代码追踪] 从统一接口获取到成交量: {volume}")
         except Exception as e:
             logger.warning(f"⚠️ 获取股票基本信息失败: {e}")
 
@@ -373,27 +381,69 @@ class OptimizedChinaDataProvider:
                         if volume == "N/A" and row_q.get('volume') is not None:
                             volume = str(row_q.get('volume'))
                             logger.debug(f"🔍 [股票代码追踪] 从market_quotes补齐成交量: {volume}")
+                    else:
+                        # market_quotes 过期或未命中 → 实时API兜底
+                        logger.debug(f"🔍 [股票代码追踪] market_quotes过期/未命中，尝试实时API回退")
+                        try:
+                            from tradingagents.dataflows.data_source_manager import DataSourceManager
+                            dm = DataSourceManager()
+                            live_price = dm._fetch_live_price_for_stock(symbol)
+                            if live_price:
+                                if current_price == "N/A" and live_price.get('current_price') is not None:
+                                    current_price = str(live_price['current_price'])
+                                    logger.debug(f"🔍 [实时回退] 获取到实时价格: {current_price}")
+                                if change_pct == "N/A" and live_price.get('change_pct') is not None:
+                                    change_pct = f"{float(live_price['change_pct']):+.2f}%"
+                                    logger.debug(f"🔍 [实时回退] 获取到实时涨跌幅: {change_pct}")
+                                if volume == "N/A" and live_price.get('volume') is not None:
+                                    volume = str(live_price['volume'])
+                                    logger.debug(f"🔍 [实时回退] 获取到实时成交量: {volume}")
+                        except Exception as _live_err:
+                            logger.debug(f"🔍 [实时回退] 失败（忽略）: {_live_err}")
         except Exception as _qe:
             logger.debug(f"🔍 [股票代码追踪] 读取market_quotes失败（忽略）: {_qe}")
 
         # 然后从股票数据中提取价格信息
+        # 优先使用实时行情，其次使用K线数据
         if "股票名称:" in stock_data:
             lines = stock_data.split('\n')
             for line in lines:
                 if "股票名称:" in line and company_name == "未知公司":
                     company_name = line.split(':')[1].strip()
-                elif "当前价格:" in line:
-                    current_price = line.split(':')[1].strip()
-                elif "最新价格:" in line or "💰 最新价格:" in line:
-                    # 兼容另一种模板输出
+                elif "当前实时价格:" in line or "💰 当前实时价格:" in line:
+                    # 实时行情快照中的价格（最高优先级，由 _format_stock_data_response 注入）
                     try:
                         current_price = line.split(':', 1)[1].strip().lstrip('¥').strip()
+                        logger.debug(f"🔍 [实时优先] 提取到实时价格: {current_price}")
                     except Exception:
-                        current_price = line.split(':')[-1].strip()
-                elif "涨跌幅:" in line:
-                    change_pct = line.split(':')[1].strip()
-                elif "成交量:" in line:
-                    volume = line.split(':')[1].strip()
+                        pass
+                elif "当前价格:" in line and current_price == "N/A":
+                    current_price = line.split(':', 1)[1].strip()
+                elif ("实时涨跌幅:" in line or "📈 实时涨跌幅:" in line) and change_pct == "N/A":
+                    try:
+                        change_pct = line.split(':', 1)[1].strip().rstrip('%')
+                        if change_pct:
+                            change_pct = f"{float(change_pct):+.2f}%"
+                        logger.debug(f"🔍 [实时优先] 提取到实时涨跌幅: {change_pct}")
+                    except Exception:
+                        pass
+                elif ("实时成交量:" in line or "📊 实时成交量:" in line) and volume == "N/A":
+                    try:
+                        volume = line.split(':', 1)[1].strip().rstrip('股').strip()
+                        logger.debug(f"🔍 [实时优先] 提取到实时成交量: {volume}")
+                    except Exception:
+                        pass
+                elif "最新价格:" in line or "💰 最新价格:" in line:
+                    # K线收盘价（低优先级，仅在实时价格未获取到时使用）
+                    if current_price == "N/A":
+                        try:
+                            current_price = line.split(':', 1)[1].strip().lstrip('¥').strip()
+                        except Exception:
+                            current_price = line.split(':')[-1].strip()
+                elif "涨跌幅:" in line and change_pct == "N/A":
+                    change_pct = line.split(':', 1)[1].strip()
+                elif "成交量:" in line and volume == "N/A":
+                    volume = line.split(':', 1)[1].strip()
 
         # 尝试从股票数据表格中提取最新价格信息
         if current_price == "N/A" and stock_data:
@@ -848,27 +898,75 @@ class OptimizedChinaDataProvider:
             from tradingagents.config.database_manager import get_database_manager
             db_manager = get_database_manager()
             db_client = None
+            realtime_price = None
 
             if db_manager.is_mongodb_available():
                 try:
                     db_client = db_manager.get_mongodb_client()
-                    db = db_client['tradingagents']
+                    db_name = db_manager.mongodb_config.get("database", "tradingagents")
+                    db = db_client[db_name]
 
                     # 标准化股票代码为6位
                     code6 = symbol.replace('.SH', '').replace('.SZ', '').zfill(6)
 
-                    # 从 market_quotes 获取实时股价
+                    # 从 market_quotes 获取实时股价（带新鲜度检查）
                     quote = db.market_quotes.find_one({"code": code6})
                     if quote and quote.get("close"):
-                        realtime_price = float(quote.get("close"))
-                        logger.info(f"✅ 从 market_quotes 获取实时股价: {code6} = {realtime_price}元 (原价格: {price_value}元)")
-                        price_value = realtime_price
-                    else:
-                        logger.info(f"⚠️ market_quotes 中未找到{code6}的实时股价，使用传入价格: {price_value}元")
+                        # 新鲜度检查：交易时段内过期数据触发实时回退
+                        updated_at = quote.get("updated_at")
+                        if updated_at is not None:
+                            try:
+                                from datetime import datetime, time as dtime
+                                from zoneinfo import ZoneInfo
+                                tz = ZoneInfo("Asia/Shanghai")
+                                now = datetime.now(tz)
+                                if isinstance(updated_at, datetime):
+                                    age = (now - updated_at).total_seconds()
+                                    is_trading = (now.weekday() <= 4 and
+                                        ((dtime(9, 30) <= now.time() <= dtime(11, 30)) or
+                                         (dtime(13, 0) <= now.time() <= dtime(15, 30))))
+                                    if is_trading and age > 300:
+                                        logger.info(f"⚠️ market_quotes 行情过期 | code={code6} age={age:.0f}s > 300s，触发实时回退")
+                                    else:
+                                        realtime_price = float(quote.get("close"))
+                                        logger.info(f"✅ 从 market_quotes 获取实时股价: {code6} = {realtime_price}元 (原价格: {price_value}元)")
+                                else:
+                                    realtime_price = float(quote.get("close"))
+                            except Exception:
+                                realtime_price = float(quote.get("close"))
+                        else:
+                            realtime_price = float(quote.get("close"))
+
+                    if realtime_price is None:
+                        logger.info(f"⚠️ market_quotes 中未找到{code6}的有效实时股价")
                 except Exception as e:
-                    logger.warning(f"⚠️ 从 market_quotes 获取实时股价失败: {e}，使用传入价格: {price_value}元")
+                    logger.warning(f"⚠️ 从 market_quotes 获取实时股价失败: {e}")
+
+            # 实时回退：MongoDB 未命中或过期 → 调用 AKShare 新浪API 获取实时价格
+            if realtime_price is None:
+                try:
+                    from app.services.data_sources.akshare_adapter import AKShareAdapter
+                    adapter = AKShareAdapter()
+                    if adapter.is_available():
+                        quotes = adapter.get_realtime_quotes(source="sina")
+                        if quotes:
+                            code6 = symbol.replace('.SH', '').replace('.SZ', '').zfill(6)
+                            stock_quote = quotes.get(code6)
+                            if not stock_quote:
+                                for k, v in quotes.items():
+                                    if str(k).lstrip('0') == code6.lstrip('0'):
+                                        stock_quote = v
+                                        break
+                            if stock_quote and stock_quote.get("close") is not None:
+                                realtime_price = stock_quote.get("close")
+                                logger.info(f"✅ [基本面] 实时行情回退成功 | price={realtime_price} code={symbol}")
+                except Exception as e:
+                    logger.debug(f"[基本面] 实时价格回退失败（忽略）: {e}")
+
+            if realtime_price is not None:
+                price_value = realtime_price
             else:
-                logger.info(f"⚠️ MongoDB 不可用，使用传入价格: {price_value}元")
+                logger.info(f"⚠️ MongoDB 不可用且实时回退失败，使用传入价格: {price_value}元")
 
             # 第一优先级：从 MongoDB stock_financial_data 集合获取标准化财务数据
             from tradingagents.config.runtime_settings import use_app_cache_enabled

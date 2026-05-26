@@ -21,6 +21,9 @@ WORKDIR /app
 # - wkhtmltopdf: 从官方下载（用于 PDF 生成）
 # - 中文字体: 用于 PDF 中文显示
 RUN mkdir -p /app/logs /app/data /app/config && \
+    # 替换为阿里云 Debian 镜像源（国内加速）
+    sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
     # 配置 apt 重试和超时
     echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries && \
     echo 'Acquire::http::Timeout "30";' >> /etc/apt/apt.conf.d/80-retries && \
@@ -42,11 +45,13 @@ RUN mkdir -p /app/logs /app/data /app/config && \
         PANDOC_ARCH="amd64"; \
         WKHTMLTOPDF_ARCH="amd64"; \
     fi && \
-    # 下载并安装 pandoc
+    # 下载并安装 pandoc（使用国内镜像加速） \
+    wget -q https://ghproxy.net/https://github.com/jgm/pandoc/releases/download/3.8.2.1/pandoc-3.8.2.1-1-${PANDOC_ARCH}.deb || \
     wget -q https://github.com/jgm/pandoc/releases/download/3.8.2.1/pandoc-3.8.2.1-1-${PANDOC_ARCH}.deb && \
     dpkg -i pandoc-3.8.2.1-1-${PANDOC_ARCH}.deb && \
     rm pandoc-3.8.2.1-1-${PANDOC_ARCH}.deb && \
-    # 下载并安装 wkhtmltopdf
+    # 下载并安装 wkhtmltopdf（使用国内镜像加速） \
+    wget -q https://ghproxy.net/https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_${WKHTMLTOPDF_ARCH}.deb || \
     wget -q https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_${WKHTMLTOPDF_ARCH}.deb && \
     apt-get install -y --no-install-recommends \
         ./wkhtmltox_0.12.6.1-3.bookworm_${WKHTMLTOPDF_ARCH}.deb && \

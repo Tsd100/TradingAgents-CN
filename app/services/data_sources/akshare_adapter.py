@@ -3,12 +3,54 @@ AKShare data source adapter
 """
 from typing import Optional, Dict
 import logging
+import time
 from datetime import datetime, timedelta
 import pandas as pd
 
 from .base import DataSourceAdapter
 
 logger = logging.getLogger(__name__)
+
+# 模拟浏览器请求头，避免被数据源反爬
+_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+}
+
+# 保存原始 requests.get，用于注入请求头
+try:
+    import requests as _requests_mod
+    _original_requests_get = _requests_mod.get
+except Exception:
+    _original_requests_get = None
+
+
+def _patched_requests_get(url, **kwargs):
+    """注入浏览器请求头的 requests.get 包装"""
+    kwargs.setdefault("headers", {})
+    for k, v in _BROWSER_HEADERS.items():
+        kwargs["headers"].setdefault(k, v)
+    kwargs.setdefault("timeout", 30)
+    return _original_requests_get(url, **kwargs)
+
+
+def _retry_with_backoff(func, max_retries=3, base_delay=2.0):
+    """带指数退避的重试装饰器"""
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return func()
+        except Exception as e:
+            last_exc = e
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(f"第 {attempt + 1}/{max_retries} 次重试，等待 {delay:.0f}s: {e}")
+                time.sleep(delay)
+            else:
+                raise last_exc
 
 
 class AKShareAdapter(DataSourceAdapter):
@@ -183,7 +225,66 @@ class AKShareAdapter(DataSourceAdapter):
             logger.error(f"AKShare: Failed to fetch basic data for {trade_date}: {e}")
             return None
 
+    def _do_fetch_quotes(self, source: str) -> Optional[Dict[str, Dict[str, Optional[float]]]]:
+        """实际执行行情获取（内部方法，由 get_realtime_quotes 调用）"""
+        import akshare as ak  # type: ignore
+
+        if source == "sina":
+            df = ak.stock_zh_a_spot()
+            logger.info("使用 AKShare 新浪财经接口获取实时行情")
+        else:
+            df = ak.stock_zh_a_spot_em()
+            logger.info("使用 AKShare 东方财富接口获取实时行情")
+
+        if df is None or getattr(df, "empty", True):
+            logger.warning(f"AKShare {source} 返回空数据")
+            return None
+
+        code_col = next((c for c in ["代码", "code", "symbol", "股票代码"] if c in df.columns), None)
+        price_col = next((c for c in ["最新价", "现价", "最新价(元)", "price", "最新", "trade"] if c in df.columns), None)
+        pct_col = next((c for c in ["涨跌幅", "涨跌幅(%)", "涨幅", "pct_chg", "changepercent"] if c in df.columns), None)
+        amount_col = next((c for c in ["成交额", "成交额(元)", "amount", "成交额(万元)", "amount(万元)"] if c in df.columns), None)
+        open_col = next((c for c in ["今开", "开盘", "open", "今开(元)"] if c in df.columns), None)
+        high_col = next((c for c in ["最高", "high"] if c in df.columns), None)
+        low_col = next((c for c in ["最低", "low"] if c in df.columns), None)
+        pre_close_col = next((c for c in ["昨收", "昨收(元)", "pre_close", "昨收价", "settlement"] if c in df.columns), None)
+        volume_col = next((c for c in ["成交量", "成交量(手)", "volume", "成交量(股)", "vol"] if c in df.columns), None)
+
+        if not code_col or not price_col:
+            logger.error(f"AKShare {source} 缺少必要列: code={code_col}, price={price_col}, columns={list(df.columns)}")
+            return None
+
+        result: Dict[str, Dict[str, Optional[float]]] = {}
+        for _, row in df.iterrows():
+            code_raw = row.get(code_col)
+            if not code_raw:
+                continue
+            code_str = str(code_raw).strip()
+            if len(code_str) > 6:
+                code_str = ''.join(filter(str.isdigit, code_str))
+            if code_str.isdigit():
+                code = code_str.lstrip('0').zfill(6) or '000000'
+            else:
+                code_digits = ''.join(filter(str.isdigit, code_str))
+                if code_digits:
+                    code = code_digits.zfill(6)
+                else:
+                    continue
+
+            result[code] = {
+                "close": self._safe_float(row.get(price_col)),
+                "pct_chg": self._safe_float(row.get(pct_col)) if pct_col else None,
+                "amount": self._safe_float(row.get(amount_col)) if amount_col else None,
+                "volume": self._safe_float(row.get(volume_col)) if volume_col else None,
+                "open": self._safe_float(row.get(open_col)) if open_col else None,
+                "high": self._safe_float(row.get(high_col)) if high_col else None,
+                "low": self._safe_float(row.get(low_col)) if low_col else None,
+                "pre_close": self._safe_float(row.get(pre_close_col)) if pre_close_col else None,
+            }
+        return result
+
     def _safe_float(self, value) -> Optional[float]:
+        """安全转换为浮点数"""
         try:
             if value is None or value == '' or value == 'None':
                 return None
@@ -191,10 +292,14 @@ class AKShareAdapter(DataSourceAdapter):
         except (ValueError, TypeError):
             return None
 
-
     def get_realtime_quotes(self, source: str = "eastmoney"):
         """
         获取全市场实时快照，返回以6位代码为键的字典
+
+        优化策略：
+        1. 注入浏览器请求头避免反爬
+        2. 失败自动重试（3次，指数退避）
+        3. 东方财富失败后自动降级到新浪财经
 
         Args:
             source: 数据源选择，"eastmoney"（东方财富）或 "sina"（新浪财经）
@@ -205,92 +310,35 @@ class AKShareAdapter(DataSourceAdapter):
         if not self.is_available():
             return None
 
+        # 注入浏览器请求头
+        import requests as _requests
+        _requests.get = _patched_requests_get
+
         try:
-            import akshare as ak  # type: ignore
+            sources_to_try = [source] if source == "sina" else [source, "sina"]
 
-            # 根据 source 参数选择接口
-            if source == "sina":
-                df = ak.stock_zh_a_spot()  # 新浪财经接口
-                logger.info("使用 AKShare 新浪财经接口获取实时行情")
-            else:  # 默认使用东方财富
-                df = ak.stock_zh_a_spot_em()  # 东方财富接口
-                logger.info("使用 AKShare 东方财富接口获取实时行情")
-
-            if df is None or getattr(df, "empty", True):
-                logger.warning(f"AKShare {source} 返回空数据")
-                return None
-
-            # 列名兼容（两个接口的列名可能不同）
-            code_col = next((c for c in ["代码", "code", "symbol", "股票代码"] if c in df.columns), None)
-            price_col = next((c for c in ["最新价", "现价", "最新价(元)", "price", "最新", "trade"] if c in df.columns), None)
-            pct_col = next((c for c in ["涨跌幅", "涨跌幅(%)", "涨幅", "pct_chg", "changepercent"] if c in df.columns), None)
-            amount_col = next((c for c in ["成交额", "成交额(元)", "amount", "成交额(万元)", "amount(万元)"] if c in df.columns), None)
-            open_col = next((c for c in ["今开", "开盘", "open", "今开(元)"] if c in df.columns), None)
-            high_col = next((c for c in ["最高", "high"] if c in df.columns), None)
-            low_col = next((c for c in ["最低", "low"] if c in df.columns), None)
-            pre_close_col = next((c for c in ["昨收", "昨收(元)", "pre_close", "昨收价", "settlement"] if c in df.columns), None)
-            volume_col = next((c for c in ["成交量", "成交量(手)", "volume", "成交量(股)", "vol"] if c in df.columns), None)
-
-            if not code_col or not price_col:
-                logger.error(f"AKShare {source} 缺少必要列: code={code_col}, price={price_col}, columns={list(df.columns)}")
-                return None
-
-            result: Dict[str, Dict[str, Optional[float]]] = {}
-            for _, row in df.iterrows():  # type: ignore
-                code_raw = row.get(code_col)
-                if not code_raw:
+            for src in sources_to_try:
+                try:
+                    result = _retry_with_backoff(
+                        lambda s=src: self._do_fetch_quotes(s),
+                        max_retries=3,
+                        base_delay=2.0
+                    )
+                    if result:
+                        logger.info(f"✅ AKShare {src} 获取到 {len(result)} 只股票的实时行情")
+                        if src != source:
+                            logger.info(f"   ℹ️ 已从 {source} 自动降级到 {src}")
+                        return result
+                except Exception as e:
+                    logger.warning(f"AKShare {src} 获取失败（已重试）: {e}")
                     continue
-                # 标准化股票代码：处理交易所前缀（如 sz000001, sh600036）
-                code_str = str(code_raw).strip()
 
-                # 如果代码长度超过6位，去掉前面的交易所前缀（如 sz, sh）
-                if len(code_str) > 6:
-                    # 去掉前面的非数字字符（通常是2个字符的交易所代码）
-                    code_str = ''.join(filter(str.isdigit, code_str))
-
-                # 如果是纯数字，移除前导0后补齐到6位
-                if code_str.isdigit():
-                    code_clean = code_str.lstrip('0') or '0'  # 移除前导0，如果全是0则保留一个0
-                    code = code_clean.zfill(6)  # 补齐到6位
-                else:
-                    # 如果不是纯数字，尝试提取数字部分
-                    code_digits = ''.join(filter(str.isdigit, code_str))
-                    if code_digits:
-                        code = code_digits.zfill(6)
-                    else:
-                        # 无法提取有效代码，跳过
-                        continue
-
-                close = self._safe_float(row.get(price_col))
-                pct = self._safe_float(row.get(pct_col)) if pct_col else None
-                amt = self._safe_float(row.get(amount_col)) if amount_col else None
-                op = self._safe_float(row.get(open_col)) if open_col else None
-                hi = self._safe_float(row.get(high_col)) if high_col else None
-                lo = self._safe_float(row.get(low_col)) if low_col else None
-                pre = self._safe_float(row.get(pre_close_col)) if pre_close_col else None
-                vol = self._safe_float(row.get(volume_col)) if volume_col else None
-
-                # 🔥 日志：记录AKShare返回的成交量
-                if code in ["300750", "000001", "600000"]:  # 只记录几个示例股票
-                    logger.info(f"📊 [AKShare实时] {code} - volume_col={volume_col}, vol={vol}, amount={amt}")
-
-                result[code] = {
-                    "close": close,
-                    "pct_chg": pct,
-                    "amount": amt,
-                    "volume": vol,
-                    "open": op,
-                    "high": hi,
-                    "low": lo,
-                    "pre_close": pre
-                }
-
-            logger.info(f"✅ AKShare {source} 获取到 {len(result)} 只股票的实时行情")
-            return result
-
-        except Exception as e:
-            logger.error(f"获取AKShare {source} 实时快照失败: {e}")
+            logger.error(f"AKShare 所有数据源均失败: {sources_to_try}")
             return None
+
+        finally:
+            # 恢复原始 requests.get
+            _requests.get = _original_requests_get
 
     def get_kline(self, code: str, period: str = "day", limit: int = 120, adj: Optional[str] = None):
         """AKShare K-line as fallback. Try daily/week/month via stock_zh_a_hist; minutes via stock_zh_a_minute."""

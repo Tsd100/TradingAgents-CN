@@ -42,7 +42,6 @@
                         size="large"
                         class="stock-input"
                         :class="{ 'is-error': stockCodeError }"
-                        :disabled="!!analysisForm.stockName"
                         @blur="validateStockCodeInput"
                         @input="onStockCodeInput"
                       >
@@ -70,7 +69,6 @@
                         clearable
                         size="large"
                         style="width: 100%"
-                        :disabled="!!analysisForm.stockCode"
                         :highlight-first-item="true"
                         @select="onStockNameSelect"
                         @input="onStockNameInput"
@@ -566,36 +564,54 @@
                   <div class="decision-card">
                     <div class="decision-main">
                       <div class="decision-action">
-                        <span class="label">分析倾向:</span>
+                        <span class="label">AI 综合判断:</span>
                         <el-tag
                           :type="getActionTagType(analysisResults.decision.action)"
                           size="large"
                         >
-                          {{ analysisResults.decision.action }}
+                          {{ getActionDisplayText(analysisResults.decision.action) }}
                         </el-tag>
-                        <el-tag type="info" size="small" style="margin-left: 8px;">仅供参考</el-tag>
+                        <el-tag type="info" size="small" style="margin-left: 8px;">仅供参考，不构成投资建议</el-tag>
                       </div>
 
                       <div class="decision-metrics">
                         <div class="metric-item">
-                          <span class="label">参考价格:</span>
+                          <span class="label">{{ getPriceLabel(analysisResults.decision.action) }}:</span>
                           <span class="value">{{ analysisResults.decision.target_price }}</span>
+                          <div class="metric-hint">{{ getPriceHint(analysisResults.decision.action) }}</div>
                         </div>
                         <div class="metric-item">
                           <span class="label">模型置信度:</span>
                           <span class="value">{{ (analysisResults.decision.confidence * 100).toFixed(1) }}%</span>
-                          <el-tooltip content="基于AI模型计算的置信度，不代表实际投资成功率" placement="top">
+                          <el-tooltip content="AI 模型对本次分析结果的把握程度，不代表投资成功率" placement="top">
                             <el-icon style="margin-left: 4px; cursor: help;"><QuestionFilled /></el-icon>
                           </el-tooltip>
                         </div>
                         <div class="metric-item">
                           <span class="label">风险评分:</span>
                           <span class="value">{{ (analysisResults.decision.risk_score * 100).toFixed(1) }}%</span>
-                          <el-tooltip content="基于历史数据的风险评估，实际风险可能更高" placement="top">
+                          <el-tooltip content="综合评估该股票当前的风险水平，数值越高风险越大" placement="top">
                             <el-icon style="margin-left: 4px; cursor: help;"><QuestionFilled /></el-icon>
                           </el-tooltip>
                         </div>
                       </div>
+                    </div>
+
+                    <div v-if="analysisResults.decision.action === 'sell'" class="decision-explain">
+                      <el-alert type="warning" :closable="false">
+                        <template #title>
+                          📌 "卖出" + "低于现价" 是什么意思？
+                        </template>
+                        AI 认为该股票当前市价高于其内在价值（即"高估"），建议在<strong>现价</strong>卖出以规避回调风险。下方价格为 AI 估算的合理价值，非卖出限价。
+                      </el-alert>
+                    </div>
+                    <div v-if="analysisResults.decision.action === 'buy'" class="decision-explain">
+                      <el-alert type="success" :closable="false">
+                        <template #title>
+                          📌 "买入" + "高于现价" 是什么意思？
+                        </template>
+                        AI 认为该股票当前市价低于其内在价值（即"低估"），建议在<strong>现价</strong>买入。下方价格为 AI 估算的目标价位，代表预计上涨空间。
+                      </el-alert>
                     </div>
 
                     <div class="decision-reasoning">
@@ -603,7 +619,7 @@
                       <p>{{ analysisResults.decision.reasoning }}</p>
                       <el-alert type="info" :closable="false" style="margin-top: 12px;">
                         <template #default>
-                          <span style="font-size: 13px;">💡 以上分析基于AI模型对历史数据的处理，不构成投资建议，请结合自身情况独立决策。</span>
+                          <span style="font-size: 13px;">💡 以上分析基于 AI 模型对公开数据的处理，所有结论仅供参考学习，不构成任何投资建议。请结合自身情况独立决策。</span>
                         </template>
                       </el-alert>
                     </div>
@@ -999,9 +1015,11 @@ const onStockNameSelect = (item: any) => {
 // 股票名称输入时的处理
 const onStockNameInput = () => {
   stockNameHelp.value = ''
-  if (!analysisForm.stockName) {
-    // 清空名称时，重新启用代码输入
+  if (!analysisForm.stockName.trim()) {
+    // 清空名称时同时清空代码
+    analysisForm.stockCode = ''
     stockCodeError.value = ''
+    stockCodeHelp.value = ''
   }
 }
 
@@ -1389,6 +1407,45 @@ const getActionTagType = (action: string): 'primary' | 'success' | 'warning' | '
     '观望': 'info'
   }
   return actionTypes[action] || 'info'
+}
+
+// 获取操作显示文本（更具描述性）
+const getActionDisplayText = (action: string): string => {
+  const texts: Record<string, string> = {
+    '买入': '买入（建议现价建仓）',
+    '卖出': '卖出（建议现价减仓）',
+    '持有': '持有（观望等待）',
+    '观望': '观望（暂不操作）'
+  }
+  return texts[action] || action
+}
+
+// 根据操作类型动态显示价格标签
+const getPriceLabel = (action: string): string => {
+  switch (action) {
+    case '买入':
+      return '目标价位（预计上涨至）'
+    case '卖出':
+      return '内在价值估算（AI估值）'
+    case '持有':
+      return '合理价位参考'
+    default:
+      return '参考价格'
+  }
+}
+
+// 根据操作类型显示价格说明
+const getPriceHint = (action: string): string => {
+  switch (action) {
+    case '买入':
+      return 'AI 估算的目标价位，当前价低于此值则有上涨空间'
+    case '卖出':
+      return 'AI 估算的内在价值，当前价高于此值说明可能被高估，建议现价卖出'
+    case '持有':
+      return 'AI 估算的合理价位，当前价在此附近则建议持有观望'
+    default:
+      return ''
+  }
 }
 
 // 获取分析报告
@@ -3314,6 +3371,19 @@ onMounted(async () => {
   font-size: 16px;
   font-weight: 600;
   color: #1f2937;
+}
+
+.metric-hint {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 2px;
+  text-align: center;
+  max-width: 200px;
+  line-height: 1.4;
+}
+
+.decision-explain {
+  margin-top: 16px;
 }
 
 .decision-reasoning h5 {

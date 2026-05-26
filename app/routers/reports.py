@@ -196,6 +196,38 @@ async def get_reports_list(
             created_at = doc.get("created_at", datetime.utcnow())
             created_at_tz = to_config_tz(created_at)  # 转换为 UTC+8 并添加时区信息
 
+            # 提取投资评级：从报告正文的"2. 操作建议"章节中解析
+            investment_rating = ""
+            import re
+            reports_data = doc.get("reports", {})
+            # 收集所有报告文本用于搜索
+            report_texts = []
+            if isinstance(reports_data, dict):
+                for key, val in reports_data.items():
+                    if isinstance(val, str):
+                        report_texts.append(val)
+            combined_text = "\n".join(report_texts)
+
+            # 从报告正文中匹配 "投资评级" 模式
+            # 模式1: **投资评级**：买入
+            # 模式2: 投资评级：买入
+            # 模式3: - **投资评级**：买入
+            rating_patterns = [
+                r'\*{0,2}投资评级\*{0,2}[：:]\s*(买入|卖出|持有|观望|增持|减持|强烈买入|强烈卖出)',
+                r'投资[建评]议[：:]\s*\*{0,2}(买入|卖出|持有|观望|增持|减持|强烈买入|强烈卖出)',
+            ]
+            for pattern in rating_patterns:
+                match = re.search(pattern, combined_text)
+                if match:
+                    investment_rating = match.group(1)
+                    break
+
+            # 兜底：从decision字段提取
+            if not investment_rating:
+                decision = doc.get("decision", {})
+                if isinstance(decision, dict):
+                    investment_rating = decision.get("action", "")
+
             report = {
                 "id": str(doc["_id"]),
                 "analysis_id": doc.get("analysis_id", ""),
@@ -204,6 +236,7 @@ async def get_reports_list(
                 "stock_name": stock_name,
                 "market_type": market_type,  # 🔥 添加市场类型字段
                 "model_info": doc.get("model_info", "Unknown"),  # 🔥 添加模型信息字段
+                "investment_rating": investment_rating,  # 🔥 投资评级
                 "type": "single",  # 目前主要是单股分析
                 "format": "markdown",  # 主要格式
                 "status": doc.get("status", "completed"),

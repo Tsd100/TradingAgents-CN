@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="report-detail">
     <!-- 加载状态 -->
     <div v-if="loading" class="loading-container">
@@ -1251,15 +1251,62 @@ watch(
     .module-content {
       .markdown-content {
         line-height: 1.6;
-        
-        :deep(h1), :deep(h2), :deep(h3) {
+        color: var(--el-text-color-primary);
+
+        :deep(h1), :deep(h2), :deep(h3), :deep(h4), :deep(h5), :deep(h6) {
           margin: 16px 0 8px 0;
           color: var(--el-text-color-primary);
+          font-weight: 600;
         }
 
         :deep(h1) { font-size: 24px; }
         :deep(h2) { font-size: 20px; }
         :deep(h3) { font-size: 16px; }
+        :deep(h4) { font-size: 15px; }
+        :deep(h5) { font-size: 14px; }
+        :deep(h6) { font-size: 13px; }
+
+        :deep(table) {
+          border-collapse: collapse;
+          border: 1px solid var(--el-border-color);
+          margin: 12px 0;
+        }
+
+        :deep(th) {
+          color: var(--el-text-color-primary);
+          font-weight: 600;
+          background: var(--el-fill-color-light);
+          border: 1px solid var(--el-border-color);
+          padding: 8px 12px;
+          text-align: left;
+          white-space: nowrap;
+        }
+
+        :deep(td) {
+          color: var(--el-text-color-primary);
+          border: 1px solid var(--el-border-color);
+          padding: 8px 12px;
+          text-align: left;
+        }
+
+        :deep(strong), :deep(b) {
+          color: var(--el-text-color-primary);
+          font-weight: 600;
+        }
+
+        :deep(p), :deep(li), :deep(span), :deep(div) {
+          color: var(--el-text-color-primary);
+        }
+
+        :deep(code) {
+          color: var(--el-color-primary);
+          background: var(--el-fill-color-light);
+        }
+
+        :deep(blockquote) {
+          color: var(--el-text-color-regular);
+          border-left-color: var(--el-color-primary);
+        }
       }
 
       .json-content {

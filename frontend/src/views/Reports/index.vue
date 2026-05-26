@@ -93,7 +93,20 @@
             </el-tag>
           </template>
         </el-table-column>
-        
+
+        <el-table-column prop="investment_rating" label="投资评级" width="100">
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.investment_rating"
+              :type="getRatingColor(row.investment_rating)"
+              effect="dark"
+            >
+              {{ row.investment_rating }}
+            </el-tag>
+            <span v-else class="text-gray">-</span>
+          </template>
+        </el-table-column>
+
         <el-table-column prop="format" label="格式" width="100">
           <template #default="{ row }">
             <el-tag size="small" effect="plain">
@@ -464,6 +477,13 @@ const getStatusText = (status: string) => {
     failed: '失败'
   }
   return statusMap[status] || status
+}
+
+const getRatingColor = (rating: string): TagType => {
+  if (rating.includes('买入')) return 'success'
+  if (rating.includes('卖出')) return 'danger'
+  if (rating.includes('持有') || rating.includes('观望')) return 'warning'
+  return 'info'
 }
 
 import { formatDateTime } from '@/utils/datetime'

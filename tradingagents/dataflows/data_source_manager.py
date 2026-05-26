@@ -83,6 +83,16 @@ class DataSourceManager:
         logger.info(f"   默认数据源: {self.default_source.value}")
         logger.info(f"   可用数据源: {[s.value for s in self.available_sources]}")
 
+    @staticmethod
+    def _safe_float(value) -> Optional[float]:
+        """安全转换为浮点数"""
+        try:
+            if value is None or value == '' or value == 'None':
+                return None
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
     def _check_mongodb_enabled(self) -> bool:
         """检查是否启用MongoDB缓存"""
         from tradingagents.config.runtime_settings import use_app_cache_enabled
@@ -902,6 +912,29 @@ class DataSourceManager:
             volume_value = self._get_volume_safely(display_data)
             result += f"   平均成交量: {volume_value:,.0f}股\n"
 
+            # 🔥 注入实时行情数据（交易时段内 k线收盘价是昨天的，需要用实时数据覆盖）
+            try:
+                live_quote = self._fetch_live_price_for_stock(symbol)
+                if live_quote and live_quote.get('current_price') is not None:
+                    live_price = live_quote['current_price']
+                    live_pct = live_quote.get('change_pct')
+                    live_vol = live_quote.get('volume')
+
+                    result += "\n📡 --- 实时行情快照 ---\n"
+                    result += f"💰 当前实时价格: ¥{live_price:.2f}\n"
+                    if live_pct is not None:
+                        result += f"📈 实时涨跌幅: {live_pct:+.2f}%\n"
+                    else:
+                        prev_close_val = latest_data.get('pre_close') or (data.iloc[-2].get('close', live_price) if len(data) > 1 else live_price)
+                        live_change_val = live_price - prev_close_val
+                        live_change_pct_val = (live_change_val / prev_close_val * 100) if prev_close_val != 0 else 0
+                        result += f"📈 实时涨跌幅: {live_change_pct_val:+.2f}% (基于昨收 {prev_close_val:.2f})\n"
+                    if live_vol is not None:
+                        result += f"📊 实时成交量: {live_vol:,.0f}股\n"
+                    result += "⚠️ 以上为实时行情数据，优先于下方历史K线统计用于判断当前价格和涨跌幅。\n"
+            except Exception as _live_err:
+                logger.debug(f"实时行情注入失败（忽略）: {_live_err}")
+
             return result
 
         except Exception as e:
@@ -1477,7 +1510,7 @@ class DataSourceManager:
                         'list_date': doc.get('list_date', '未知'),
                         'source': 'app_cache'
                     }
-                    # 追加快照行情（若存在）
+                    # 追加快照行情（若存在），过期则实时回退
                     try:
                         df = get_market_quote_dataframe(symbol)
                         if df is not None and not df.empty:
@@ -1488,6 +1521,12 @@ class DataSourceManager:
                             result['quote_date'] = row.get('date')
                             result['quote_source'] = 'market_quotes'
                             logger.info(f"✅ [股票信息] 附加行情 | price={result['current_price']} pct={result['change_pct']} vol={result['volume']} code={symbol}")
+                        else:
+                            # market_quotes 过期或未命中 → 尝试实时获取
+                            live_price = self._fetch_live_price_for_stock(symbol)
+                            if live_price is not None:
+                                result.update(live_price)
+                                logger.info(f"✅ [股票信息] 实时行情回退成功 | price={result.get('current_price')} code={symbol}")
                     except Exception as _e:
                         logger.debug(f"附加行情失败（忽略）：{_e}")
 
@@ -1531,6 +1570,197 @@ class DataSourceManager:
         except Exception as e:
             logger.error(f"❌ [数据来源: {self.current_source.value}异常] 获取股票信息失败: {e}", exc_info=True)
             return self._try_fallback_stock_info(symbol)
+
+    def _fetch_live_price_from_sina_direct(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        直接通过 HTTP 调用新浪财经 API 获取实时行情（不依赖 AKShare）。
+
+        新浪 API: http://hq.sinajs.cn/list=sh600498
+        返回格式: var hq_str_sh600498="名称,今开,昨收,当前价,最高,最低,..."
+        字段索引: 0=名称, 1=今开, 2=昨收, 3=当前价, 4=最高, 5=最低, ...
+        """
+        try:
+            import urllib.request
+            code = str(symbol).zfill(6)
+            # 判断交易所前缀
+            if code.startswith(('60', '68')):
+                prefix = 'sh'
+            else:
+                prefix = 'sz'
+            full_code = f"{prefix}{code}"
+
+            url = f"http://hq.sinajs.cn/list={full_code}"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': 'https://finance.sina.com.cn',
+                    'Accept': '*/*',
+                }
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode('gbk', errors='replace')
+
+            if not raw or 'var hq_str_' not in raw:
+                return None
+
+            # 提取引号内的数据
+            data_str = raw.split('"')[1] if '"' in raw else ''
+            if not data_str:
+                return None
+
+            fields = data_str.split(',')
+            if len(fields) < 32:
+                return None
+
+            name = fields[0]
+            open_price = self._safe_float(fields[1])
+            prev_close = self._safe_float(fields[2])
+            current_price = self._safe_float(fields[3])
+            high = self._safe_float(fields[4])
+            low = self._safe_float(fields[5])
+            volume = self._safe_float(fields[8])  # 成交量(股)
+
+            if current_price is None or current_price <= 0:
+                return None
+
+            change_pct = None
+            if prev_close and prev_close > 0:
+                change_pct = round((current_price - prev_close) / prev_close * 100, 2)
+
+            logger.debug(
+                f"[新浪直连] {name}({symbol}): 当前价={current_price}, "
+                f"涨跌幅={change_pct:+.2f}%, 昨收={prev_close}"
+            )
+            return {
+                'current_price': current_price,
+                'change_pct': change_pct,
+                'volume': volume,
+                'quote_source': 'sina_direct',
+                'name': name,
+            }
+        except Exception as e:
+            logger.debug(f"[新浪直连] 失败（忽略）: {e}")
+        return None
+
+    def _fetch_live_price_from_tencent_direct(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        直接通过 HTTP 调用腾讯财经 API 获取实时行情（不依赖 AKShare）。
+
+        腾讯 API: http://qt.gtimg.cn/q=sh600498
+        返回格式: v_sh600498="1~名称~代码~当前价~昨收~今开~成交量~..."
+        字段索引: 0=市场, 1=名称, 2=代码, 3=当前价, 4=昨收, 5=今开, 6=成交量, ...
+        """
+        try:
+            import urllib.request
+            code = str(symbol).zfill(6)
+            if code.startswith(('60', '68')):
+                prefix = 'sh'
+            else:
+                prefix = 'sz'
+            full_code = f"{prefix}{code}"
+
+            url = f"http://qt.gtimg.cn/q={full_code}"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': '*/*',
+                }
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode('gbk', errors='replace')
+
+            if not raw or '~' not in raw:
+                return None
+
+            # 格式: v_sh600498="..." 或 v_sz000001="..."
+            data_str = raw.split('"')[1] if '"' in raw else ''
+            if not data_str:
+                return None
+
+            fields = data_str.split('~')
+            if len(fields) < 10:
+                return None
+
+            name = fields[1]
+            current_price = self._safe_float(fields[3])
+            prev_close = self._safe_float(fields[4])
+            open_price = self._safe_float(fields[5])
+            volume_str = fields[6]
+            volume = self._safe_float(volume_str) * 100 if volume_str and volume_str.isdigit() else None  # 腾讯单位是手
+
+            if current_price is None or current_price <= 0:
+                return None
+
+            change_pct = None
+            if prev_close and prev_close > 0:
+                change_pct = round((current_price - prev_close) / prev_close * 100, 2)
+
+            logger.debug(
+                f"[腾讯直连] {name}({symbol}): 当前价={current_price}, "
+                f"涨跌幅={change_pct:+.2f}%, 昨收={prev_close}"
+            )
+            return {
+                'current_price': current_price,
+                'change_pct': change_pct,
+                'volume': volume,
+                'quote_source': 'tencent_direct',
+                'name': name,
+            }
+        except Exception as e:
+            logger.debug(f"[腾讯直连] 失败（忽略）: {e}")
+        return None
+
+    def _fetch_live_price_for_stock(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        实时获取单只股票当前价格。
+
+        优先级：腾讯直连 > 新浪直连 > AKShare库
+
+        在 market_quotes 过期或未命中时调用，确保分析报告使用最新价格。
+        """
+        # 1. 优先腾讯直连（数据更丰富，不依赖AKShare库）
+        result = self._fetch_live_price_from_tencent_direct(symbol)
+        if result:
+            logger.debug(f"[实时价格] ✅ 腾讯直连成功: {result.get('current_price')}")
+            return result
+
+        # 2. 备选新浪直连
+        result = self._fetch_live_price_from_sina_direct(symbol)
+        if result:
+            logger.debug(f"[实时价格] ✅ 新浪直连成功: {result.get('current_price')}")
+            return result
+
+        # 3. AKShare 库兜底（可能被IP封禁）
+        try:
+            from app.services.data_sources.akshare_adapter import AKShareAdapter
+            adapter = AKShareAdapter()
+            if not adapter.is_available():
+                return None
+
+            quotes = adapter.get_realtime_quotes(source="sina")
+            if not quotes:
+                return None
+
+            code = str(symbol).zfill(6)
+            stock_quote = quotes.get(code)
+            if not stock_quote:
+                for k, v in quotes.items():
+                    if str(k).lstrip('0') == str(symbol).lstrip('0'):
+                        stock_quote = v
+                        break
+
+            if stock_quote and stock_quote.get('close') is not None:
+                return {
+                    'current_price': stock_quote.get('close'),
+                    'change_pct': stock_quote.get('pct_chg'),
+                    'volume': stock_quote.get('volume'),
+                    'quote_source': 'akshare_live',
+                }
+        except Exception as e:
+            logger.debug(f"[实时价格回退] AKShare失败（忽略）: {e}")
+        return None
 
     def get_stock_basic_info(self, stock_code: str = None) -> Optional[Dict[str, Any]]:
         """

@@ -296,21 +296,39 @@ class QuotesIngestionService:
                 - akshare_api: "eastmoney" | "sina" (仅当 source_type="akshare" 时有效)
         """
         if not settings.QUOTES_ROTATION_ENABLED:
-            # 未启用轮换，使用默认优先级
             return "tushare", None
 
-        # 轮换逻辑：0=Tushare, 1=AKShare东方财富, 2=AKShare新浪财经
         current_source = self._rotation_sources[self._rotation_index]
-
-        # 更新轮换索引（下次使用下一个接口）
         self._rotation_index = (self._rotation_index + 1) % len(self._rotation_sources)
 
         if current_source == "tushare":
             return "tushare", None
         elif current_source == "akshare_eastmoney":
             return "akshare", "eastmoney"
-        else:  # akshare_sina
+        else:
             return "akshare", "sina"
+
+    def _get_all_sources_rotated(self) -> List[Tuple[str, Optional[str]]]:
+        """
+        获取所有数据源，从当前轮换位置开始排序。
+
+        用于在一次 run_once() 中尝试所有数据源，而不是只试一个就放弃。
+        """
+        if not settings.QUOTES_ROTATION_ENABLED:
+            return [("tushare", None), ("akshare", "eastmoney"), ("akshare", "sina")]
+
+        result = []
+        n = len(self._rotation_sources)
+        for i in range(n):
+            idx = (self._rotation_index + i) % n
+            src = self._rotation_sources[idx]
+            if src == "tushare":
+                result.append(("tushare", None))
+            elif src == "akshare_eastmoney":
+                result.append(("akshare", "eastmoney"))
+            else:
+                result.append(("akshare", "sina"))
+        return result
 
     def _is_trading_time(self, now: Optional[datetime] = None) -> bool:
         """
@@ -627,20 +645,25 @@ class QuotesIngestionService:
                         f"当前采集间隔: {settings.QUOTES_INGEST_INTERVAL_SECONDS} 秒"
                     )
 
-            # 获取下一个数据源
-            source_type, akshare_api = self._get_next_source()
+            # 按轮换顺序尝试所有可用数据源，直到一个成功
+            sources_to_try = self._get_all_sources_rotated()
+            quotes_map = None
+            source_name = None
+            last_error = None
 
-            # 尝试获取行情
-            quotes_map, source_name = self._fetch_quotes_from_source(source_type, akshare_api)
+            for source_type, akshare_api in sources_to_try:
+                quotes_map, source_name = self._fetch_quotes_from_source(source_type, akshare_api)
+                if quotes_map:
+                    break
+                logger.warning(f"⚠️ {source_name or source_type} 未获取到行情数据，尝试下一个数据源...")
 
             if not quotes_map:
-                logger.warning(f"⚠️ {source_name or source_type} 未获取到行情数据，跳过本次入库")
-                # 记录失败状态
+                logger.warning(f"⚠️ 所有数据源均失败，跳过本次入库")
                 await self._record_sync_status(
                     success=False,
-                    source=source_name or source_type,
+                    source=source_name or "all_sources",
                     records_count=0,
-                    error_msg="未获取到行情数据"
+                    error_msg="所有数据源均未获取到行情数据"
                 )
                 return
 

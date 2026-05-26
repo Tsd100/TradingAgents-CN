@@ -121,6 +121,60 @@ async def get_quote(
     else:
         logger.info(f"  ❌ 未找到数据")
 
+    # 🔥 新鲜度检查：交易时段内过期数据触发实时回退
+    quote_stale = False
+    if q:
+        from datetime import datetime, time as dtime
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("Asia/Shanghai")
+            now = datetime.now(tz)
+            updated_at = q.get("updated_at")
+            if updated_at is not None and isinstance(updated_at, datetime):
+                age = (now - updated_at).total_seconds()
+                is_trading = (now.weekday() <= 4 and
+                    ((dtime(9, 30) <= now.time() <= dtime(11, 30)) or
+                     (dtime(13, 0) <= now.time() <= dtime(15, 30))))
+                if is_trading and age > 300:
+                    logger.info(f"⚠️ [行情API] 行情过期 | code={code6} age={age:.0f}s > 300s，触发实时回退")
+                    quote_stale = True
+        except Exception:
+            pass
+
+    # 🔥 实时回退：过期或未命中 → 调用 AKShare 新浪API
+    if (not q or quote_stale) and not force_refresh:
+        try:
+            from app.services.data_sources.akshare_adapter import AKShareAdapter
+            adapter = AKShareAdapter()
+            if adapter.is_available():
+                quotes = adapter.get_realtime_quotes(source="sina")
+                if quotes:
+                    stock_quote = quotes.get(code6)
+                    if not stock_quote:
+                        for k, v in quotes.items():
+                            if str(k).lstrip('0') == code6.lstrip('0'):
+                                stock_quote = v
+                                break
+                    if stock_quote and stock_quote.get("close") is not None:
+                        # 用实时数据覆盖 q
+                        q = {
+                            "code": code6,
+                            "close": stock_quote.get("close"),
+                            "pct_chg": stock_quote.get("pct_chg"),
+                            "amount": stock_quote.get("amount"),
+                            "volume": stock_quote.get("volume"),
+                            "open": stock_quote.get("open"),
+                            "high": stock_quote.get("high"),
+                            "low": stock_quote.get("low"),
+                            "pre_close": stock_quote.get("pre_close"),
+                            "turnover_rate": q.get("turnover_rate") if q else None,
+                            "trade_date": datetime.now(tz).strftime("%Y%m%d"),
+                            "updated_at": datetime.now(tz),
+                        }
+                        logger.info(f"✅ [行情API] 实时回退成功 | price={q.get('close')} code={code6}")
+        except Exception as e:
+            logger.warning(f"[行情API] 实时回退失败（忽略）: {e}")
+
     # 🔥 基础信息 - 按数据源优先级查询
     from app.core.unified_config import UnifiedConfigManager
     config = UnifiedConfigManager()
